@@ -1,0 +1,6 @@
+{
+  "name": "b4dut analisis",
+  "description": "Aplikasi analitik metadata chanel: genre musik, deskripsi chanel & upload, tag, hashtag, dan jadwal jam tayang dengan desain minimalis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
