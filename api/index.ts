@@ -1,3 +1,3 @@
-import app from '../server.js';
+import handler from './analyze.js';
 
-export default app;
+export default handler;
