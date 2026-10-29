@@ -13,9 +13,16 @@ app.use(express.json({ limit: '10mb' }));
 // Helper to determine if we have a valid Google Gemini API Key
 function getValidGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY || '';
-  if (apiKey && apiKey.startsWith('AIzaSy')) {
+  if (apiKey && apiKey.length > 10) {
     try {
-      return new GoogleGenAI({ apiKey });
+      return new GoogleGenAI({ 
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
     } catch {
       return null;
     }
@@ -170,7 +177,7 @@ HASILKAN HANYA JSON VALID (tanpa pembungkus markdown) dengan struktur persis sep
 }`;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.8-flash',
           contents: prompt,
           config: {
             responseMimeType: 'application/json',
@@ -186,21 +193,9 @@ HASILKAN HANYA JSON VALID (tanpa pembungkus markdown) dengan struktur persis sep
       }
     }
 
-    // High quality client fallback analyzer
-    const fallbackData = generateClientAnalysis(cleanInput);
-    if (scrapedData) {
-      if (scrapedData.channelName) fallbackData.channelName = scrapedData.channelName;
-      if (scrapedData.handle) fallbackData.handle = scrapedData.handle;
-      if (scrapedData.subscribersEstimate) fallbackData.subscribersEstimate = scrapedData.subscribersEstimate;
-      if (scrapedData.totalVideosEstimate) fallbackData.totalVideosEstimate = scrapedData.totalVideosEstimate;
-      if (fallbackData.channelProfile) {
-        if (scrapedData.avatarUrl) fallbackData.channelProfile.avatarUrl = scrapedData.avatarUrl;
-        if (scrapedData.thumbnailUrl) fallbackData.channelProfile.thumbnailUrl = scrapedData.thumbnailUrl;
-        if (scrapedData.title) fallbackData.channelProfile.videoTitle = scrapedData.title;
-      }
-    }
-
-    return res.json({ success: true, data: fallbackData });
+    // High quality deterministic client fallback analyzer
+    const analysisData = generateClientAnalysis(cleanInput, scrapedData);
+    return res.json({ success: true, data: analysisData });
   } catch (error: any) {
     // Never fail with 500 if input was given
     const fallback = generateClientAnalysis(req.body?.channelInput || 'Chanel Musik');

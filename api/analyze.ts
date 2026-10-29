@@ -37,19 +37,42 @@ export default async function handler(req: any, res: any) {
 
     // Check Gemini API
     const apiKey = process.env.GEMINI_API_KEY || '';
-    if (apiKey && apiKey.startsWith('AIzaSy')) {
+    if (apiKey && apiKey.length > 10) {
       try {
-        const ai = new GoogleGenAI({ apiKey });
+        const ai = new GoogleGenAI({
+          apiKey,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build',
+            },
+          },
+        });
+
         const prompt = `Anda adalah kurator musik & ahli SEO YouTube terkemuka untuk platform </ Arz.Studio >.
-Tugas Anda adalah menghasilkan analitik metadata mendalam dalam JSON valid.
+Tugas Anda adalah menghasilkan analitik metadata mendalam dalam format JSON valid berstruktur ChannelMetadataAnalysis.
 
-Input: "${clean}"
-${scrapedData ? `Scraped: Judul: ${scrapedData.title}, Chanel: ${scrapedData.channelName}, Tags: ${scrapedData.tags.join(', ')}` : ''}
+Input Pengguna: "${clean}"
+${scrapedData ? `
+Informasi Hasil Scraper YouTube Terverifikasi:
+- Judul Video: "${scrapedData.title || ''}"
+- Nama Chanel / Artis: "${scrapedData.channelName || ''}" (${scrapedData.handle || ''})
+- Perkiraan Pelanggan / Subscribers: "${scrapedData.subscribersEstimate || ''}"
+- Total Video: "${scrapedData.totalVideosEstimate || ''}"
+- Deskripsi Asli Chanel: "${scrapedData.description ? scrapedData.description.slice(0, 500) : ''}"
+- Tags / Tagar: "${(scrapedData.tags || []).slice(0, 10).join(', ')}"
+` : ''}
 
-Hasilkan data JSON valid berstruktur ChannelMetadataAnalysis lengkap.`;
+PETUNJUK ANALISIS KRUSIAL:
+1. Identifikasi genre musik secara akurat berdasarkan judul dan karakter artis (misal: Japanese Zen & Ambient, Koplo Jawa, Lofi Chill, DJ Remix, Cinematic Soundtrack, Pop Akustik, Sholawat Religi, Rock).
+2. Jika karya berupa musik Zen, Meditasi, atau Instrumental Ambient, sesuaikan instrumen (seperti Shakuhachi, Koto, Soft Piano, Wind Chimes), mood tenang, dan babak navigasi instrumen. Jangan membuat lirik vokal fiktif untuk lagu instrumental!
+3. Susun Upload Description yang profesional, mencakup hook pembuka, babak navigasi (timestamps 00:00), kredit musisi/produksi, tautan DSP streaming, dan klausa hak cipta resmi.
+4. Buat analisis tag dan hashtag relevan sesuai ceruk musik tersebut.
+5. Berikan jadwal jam tayang WIB terbaik dengan alasan audiens yang logis.
+
+Balas HANYA dengan objek JSON valid sesuai tipe ChannelMetadataAnalysis.`;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.8-flash',
           contents: prompt,
           config: {
             responseMimeType: 'application/json',
@@ -58,30 +81,39 @@ Hasilkan data JSON valid berstruktur ChannelMetadataAnalysis lengkap.`;
 
         if (response && response.text) {
           const parsed = JSON.parse(response.text) as ChannelMetadataAnalysis;
-          return res.status(200).json({ success: true, data: parsed });
+          if (parsed && parsed.channelName && parsed.musicGenre) {
+            // Merge avatar and thumbnail from scrapedData if missing
+            if (scrapedData) {
+              if (!parsed.channelProfile) {
+                parsed.channelProfile = {
+                  channelName: parsed.channelName,
+                  handle: parsed.handle,
+                  channelUrl: scrapedData.channelUrl || `https://www.youtube.com/${parsed.handle}`,
+                };
+              }
+              if (scrapedData.avatarUrl && !parsed.channelProfile.avatarUrl) {
+                parsed.channelProfile.avatarUrl = scrapedData.avatarUrl;
+              }
+              if (scrapedData.thumbnailUrl && !parsed.channelProfile.thumbnailUrl) {
+                parsed.channelProfile.thumbnailUrl = scrapedData.thumbnailUrl;
+              }
+              if (scrapedData.title && !parsed.channelProfile.videoTitle) {
+                parsed.channelProfile.videoTitle = scrapedData.title;
+              }
+            }
+            return res.status(200).json({ success: true, data: parsed });
+          }
         }
       } catch {
         // Fall back to client analyzer
       }
     }
 
-    // Default high quality analysis
-    const fallbackData = generateClientAnalysis(clean);
-    if (scrapedData) {
-      if (scrapedData.channelName) fallbackData.channelName = scrapedData.channelName;
-      if (scrapedData.handle) fallbackData.handle = scrapedData.handle;
-      if (scrapedData.subscribersEstimate) fallbackData.subscribersEstimate = scrapedData.subscribersEstimate;
-      if (scrapedData.totalVideosEstimate) fallbackData.totalVideosEstimate = scrapedData.totalVideosEstimate;
-      if (fallbackData.channelProfile) {
-        if (scrapedData.avatarUrl) fallbackData.channelProfile.avatarUrl = scrapedData.avatarUrl;
-        if (scrapedData.thumbnailUrl) fallbackData.channelProfile.thumbnailUrl = scrapedData.thumbnailUrl;
-        if (scrapedData.title) fallbackData.channelProfile.videoTitle = scrapedData.title;
-      }
-    }
-
-    return res.status(200).json({ success: true, data: fallbackData });
+    // High quality deterministic metadata analysis engine
+    const analysisData = generateClientAnalysis(clean, scrapedData);
+    return res.status(200).json({ success: true, data: analysisData });
   } catch {
-    const data = generateClientAnalysis(req.body?.channelInput || 'Chanel Musik');
-    return res.status(200).json({ success: true, data });
+    const fallbackData = generateClientAnalysis(req.body?.channelInput || 'Chanel Musik');
+    return res.status(200).json({ success: true, data: fallbackData });
   }
 }

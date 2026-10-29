@@ -90,12 +90,13 @@ export async function scrapeYouTubeMetadata(input: string): Promise<ScrapedYouTu
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   };
 
-  // 1. Try public oEmbed with 2500ms timeout
+  // 1. Try public oEmbed with clean canonical URL (stripping tracking query params)
+  const canonicalUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : targetUrl;
   try {
-    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`;
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalUrl)}&format=json`;
     const oembedRes = await fetch(oembedUrl, { 
       headers,
-      signal: AbortSignal.timeout(2500),
+      signal: AbortSignal.timeout(3000),
     });
     if (oembedRes.ok) {
       const oembedData: any = await oembedRes.json();
@@ -114,18 +115,20 @@ export async function scrapeYouTubeMetadata(input: string): Promise<ScrapedYouTu
     // Non-fatal, continue with HTML or URL info
   }
 
-  // 2. Fetch page HTML with 2500ms timeout
+  // 2. Fetch Channel or Video Page with 3000ms timeout
   let channelId = '';
+  // If we already have the author URL from oEmbed and it's a specific video, fetching the author channel page yields rich channel description and real subscriber counts
+  const pageToFetch = (isSpecificVideo && channelUrl && channelUrl.includes('@')) ? channelUrl : targetUrl;
   try {
-    const pageRes = await fetch(targetUrl, { 
+    const pageRes = await fetch(pageToFetch, { 
       headers, 
       redirect: 'follow',
-      signal: AbortSignal.timeout(2500),
+      signal: AbortSignal.timeout(3000),
     });
     if (pageRes.ok) {
       const html = await pageRes.text();
 
-      // Title
+      // Title (if not already found from oEmbed)
       if (!title) {
         const titleMatch = html.match(/<meta property="og:title" content="([^"]+)">/) ||
                            html.match(/<title>([^<]+)<\/title>/);
@@ -134,20 +137,44 @@ export async function scrapeYouTubeMetadata(input: string): Promise<ScrapedYouTu
         }
       }
 
-      // Complete Full Description (Prioritize shortDescription from player response or description runs)
-      const shortDescMatch = html.match(/"shortDescription":"((?:\\.|[^"\\])*)"/);
-      if (shortDescMatch) {
+      // Real Channel or Video Description from JSON
+      const descMatchJson = html.match(/"description":"((?:\\.|[^"\\])*)"/);
+      if (descMatchJson) {
         try {
-          const raw = shortDescMatch[1];
-          description = raw
+          const raw = descMatchJson[1];
+          const parsed = raw
             .replace(/\\n/g, '\n')
             .replace(/\\r/g, '')
             .replace(/\\t/g, '  ')
             .replace(/\\"/g, '"')
             .replace(/\\\\/g, '\\')
-            .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+            .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+            .trim();
+          if (parsed && !description) {
+            description = parsed;
+          }
         } catch {
-          // ignore fallback
+          // ignore
+        }
+      }
+
+      // Short description match (player response)
+      if (!description) {
+        const shortDescMatch = html.match(/"shortDescription":"((?:\\.|[^"\\])*)"/);
+        if (shortDescMatch) {
+          try {
+            const raw = shortDescMatch[1];
+            description = raw
+              .replace(/\\n/g, '\n')
+              .replace(/\\r/g, '')
+              .replace(/\\t/g, '  ')
+              .replace(/\\"/g, '"')
+              .replace(/\\\\/g, '\\')
+              .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+              .trim();
+          } catch {
+            // ignore fallback
+          }
         }
       }
 
@@ -155,8 +182,18 @@ export async function scrapeYouTubeMetadata(input: string): Promise<ScrapedYouTu
         const descMatch = html.match(/<meta property="og:description" content="([^"]*)">/) ||
                           html.match(/<meta name="description" content="([^"]*)">/);
         if (descMatch) {
-          description = decodeHtmlEntities(descMatch[1]);
+          description = decodeHtmlEntities(descMatch[1]).trim();
         }
+      }
+
+      // Filter out generic YouTube site slogan
+      if (
+        description.toLowerCase().includes('nikmati video dan musik yang anda suka') ||
+        description.toLowerCase().includes('enjoy the videos and music you love') ||
+        description.toLowerCase().includes('sebelum melanjutkan ke youtube') ||
+        description.toLowerCase().includes('before you continue to youtube')
+      ) {
+        description = '';
       }
 
       // Thumbnail / Avatar
@@ -173,18 +210,22 @@ export async function scrapeYouTubeMetadata(input: string): Promise<ScrapedYouTu
         avatarUrl = avatarMatch[0];
       }
 
-      // Subscribers
-      const subMatch = html.match(/"subscriberCountText":\{"accessibility":\{"accessibilityData":\{"label":"([^"]+)"/) ||
+      // Subscribers (Handles legacy subscriberCountText and modern metadataParts accessibilityLabel/content)
+      const subMatch = html.match(/"accessibilityLabel":"([^"]*(?:subscriber|pelanggan)[^"]*)"/i) ||
+                       html.match(/"content":"([^"]*(?:rb|jt|K|M)\s*(?:subscriber|pelanggan)[^"]*)"/i) ||
+                       html.match(/"subscriberCountText":\{"accessibility":\{"accessibilityData":\{"label":"([^"]+)"/) ||
                        html.match(/"subscriberCountText":\{"simpleText":"([^"]+)"/);
       if (subMatch) {
-        subscribersEstimate = decodeHtmlEntities(subMatch[1]);
+        subscribersEstimate = decodeHtmlEntities(subMatch[1]).trim();
       }
 
       // Videos count
-      const vidCountMatch = html.match(/"videosCountText":\{"accessibility":\{"accessibilityData":\{"label":"([^"]+)"/) ||
+      const vidCountMatch = html.match(/"content":"([^"]*(?:video|videos)[^"]*)"/i) ||
+                            html.match(/"accessibilityLabel":"([^"]*(?:video|videos)[^"]*)"/i) ||
+                            html.match(/"videosCountText":\{"accessibility":\{"accessibilityData":\{"label":"([^"]+)"/) ||
                             html.match(/"videosCountText":\{"runs":\[\{"text":"([^"]+)"/);
       if (vidCountMatch) {
-        totalVideosEstimate = decodeHtmlEntities(vidCountMatch[1]);
+        totalVideosEstimate = decodeHtmlEntities(vidCountMatch[1]).trim();
       }
 
       // Tags
@@ -195,14 +236,21 @@ export async function scrapeYouTubeMetadata(input: string): Promise<ScrapedYouTu
         if (t && !tags.includes(t)) tags.push(t);
       }
 
-      // Keywords fallback
+      // Keywords fallback from meta keywords
+      const genericKeywords = new Set([
+        'video', 'berbagi', 'ponsel kamera', 'ponsel video', 'gratis', 'upload',
+        'share', 'camera phone', 'free', 'uploaden', 'youtube'
+      ]);
+
       if (tags.length === 0) {
         const keywordsMatch = html.match(/<meta name="keywords" content="([^"]+)">/);
         if (keywordsMatch) {
           const rawKeywords = decodeHtmlEntities(keywordsMatch[1]);
           rawKeywords.split(',').forEach(k => {
             const trimmed = k.trim();
-            if (trimmed && !tags.includes(trimmed)) tags.push(trimmed);
+            if (trimmed && !tags.includes(trimmed) && !genericKeywords.has(trimmed.toLowerCase())) {
+              tags.push(trimmed);
+            }
           });
         }
       }
